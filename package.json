@@ -1,0 +1,16 @@
+{
+  "name": "consultation-booking-system",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel --filter ./apps/* dev",
+    "build": "pnpm --filter ./apps/server build && pnpm --filter ./apps/client build",
+    "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --filter @consultation/server test",
+    "test:integration": "pnpm --filter @consultation/server test:integration",
+    "admin:create": "pnpm --filter @consultation/server admin:create",
+    "db:seed-demo": "pnpm --filter @consultation/server seed:demo",
+    "db:generate": "pnpm --filter @consultation/server prisma:generate",
+    "db:migrate": "pnpm --filter @consultation/server prisma:migrate"
+  }
+}

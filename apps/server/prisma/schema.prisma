@@ -1,0 +1,126 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CLIENT
+  SPECIALIST
+  ADMIN
+}
+
+enum AppointmentStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+model User {
+  id              String             @id @default(uuid())
+  email           String             @unique
+  passwordHash    String
+  firstName       String
+  lastName        String
+  role            UserRole           @default(CLIENT)
+  isActive        Boolean            @default(true)
+  specialist      SpecialistProfile?
+  clientBookings  Appointment[]      @relation("ClientAppointments")
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+}
+
+model SpecialistProfile {
+  id            String             @id @default(uuid())
+  userId        String             @unique
+  user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  description     String?
+  specializationUk String
+  specializationEn String?
+  descriptionUk   String?
+  descriptionEn   String?
+  isActive       Boolean            @default(true)
+  slotStepMin   Int                @default(15)
+  services      SpecialistService[]
+  schedules     WorkSchedule[]
+  exceptions    ScheduleException[]
+  appointments  Appointment[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+
+model Service {
+  id            String             @id @default(uuid())
+  name          String
+  description   String?
+  nameUk        String
+  nameEn        String
+  descriptionUk String?
+  descriptionEn String?
+  durationMin   Int
+  priceCents    Int?
+  isActive      Boolean            @default(true)
+  specialists   SpecialistService[]
+  appointments  Appointment[]
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+}
+
+model SpecialistService {
+  specialistId String
+  serviceId    String
+  priceCents   Int?
+  durationMin  Int?
+  specialist   SpecialistProfile @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  service      Service           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@id([specialistId, serviceId])
+}
+
+model WorkSchedule {
+  id            String             @id @default(uuid())
+  specialistId  String
+  specialist    SpecialistProfile  @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  weekday       Int
+  startMinute   Int
+  endMinute     Int
+  isActive      Boolean            @default(true)
+
+  @@index([specialistId, weekday])
+}
+
+model ScheduleException {
+  id            String             @id @default(uuid())
+  specialistId  String
+  specialist    SpecialistProfile  @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  startsAt      DateTime
+  endsAt        DateTime
+  isAvailable   Boolean            @default(false)
+  note          String?
+
+  @@index([specialistId, startsAt, endsAt])
+}
+
+model Appointment {
+  id            String             @id @default(uuid())
+  clientId      String
+  client        User               @relation("ClientAppointments", fields: [clientId], references: [id])
+  specialistId  String
+  specialist    SpecialistProfile  @relation(fields: [specialistId], references: [id])
+  serviceId     String
+  priceCents    Int?
+  service       Service            @relation(fields: [serviceId], references: [id])
+  startsAt      DateTime
+  endsAt        DateTime
+  status        AppointmentStatus  @default(CONFIRMED)
+  clientNote    String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([specialistId, startsAt, endsAt])
+  @@index([clientId, startsAt])
+}
