@@ -10,6 +10,7 @@
     "test:integration": "pnpm --filter @consultation/server test:integration",
     "admin:create": "pnpm --filter @consultation/server admin:create",
     "db:seed-demo": "pnpm --filter @consultation/server seed:demo",
+    "db:seed-showcase": "pnpm --filter @consultation/server seed:showcase",
     "db:generate": "pnpm --filter @consultation/server prisma:generate",
     "db:migrate": "pnpm --filter @consultation/server prisma:migrate"
   }

@@ -75,6 +75,8 @@ const main = async () => {
         specializationEn,
         descriptionUk: `${specializationUk}. Онлайн-консультації за попереднім записом.`,
         descriptionEn: `${specializationEn}. Online sessions by appointment.`,
+        experienceStartYear: 2014 + (index % 9),
+        languages: index % 3 === 0 ? ["Українська", "English"] : ["Українська"],
         isActive: true,
         slotStepMin: 15,
         services: { deleteMany: {}, create: assignedServices },
@@ -92,6 +94,8 @@ const main = async () => {
         specializationEn,
         descriptionUk: `${specializationUk}. Онлайн-консультації за попереднім записом.`,
         descriptionEn: `${specializationEn}. Online sessions by appointment.`,
+        experienceStartYear: 2014 + (index % 9),
+        languages: index % 3 === 0 ? ["Українська", "English"] : ["Українська"],
         slotStepMin: 15,
         services: { create: assignedServices },
         schedules: {

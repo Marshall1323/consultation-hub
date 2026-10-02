@@ -51,6 +51,7 @@ adminRouter.get("/users", async (request, response) => {
       email: true,
       firstName: true,
       lastName: true,
+      avatarUrl: true,
       role: true,
       isActive: true,
       createdAt: true,
@@ -88,7 +89,7 @@ adminRouter.patch("/users/:userId/role", async (request, response) => {
       return transaction.user.update({
         where: { id: request.params.userId },
         data: { role: parsed.data.role },
-        select: { id: true, email: true, firstName: true, lastName: true, role: true, isActive: true },
+        select: { id: true, email: true, firstName: true, lastName: true, avatarUrl: true, role: true, isActive: true, createdAt: true },
       });
     });
     response.json({ user });

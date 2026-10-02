@@ -1,11 +1,12 @@
 export const appointmentInclude = {
-  client: { select: { id: true, firstName: true, lastName: true, email: true } },
+  client: { select: { id: true, firstName: true, lastName: true, email: true, avatarUrl: true } },
   specialist: {
     select: {
       id: true,
       specializationUk: true,
       specializationEn: true,
-      user: { select: { id: true, firstName: true, lastName: true } },
+      photoUrl: true,
+      user: { select: { id: true, firstName: true, lastName: true, avatarUrl: true } },
     },
   },
   service: {

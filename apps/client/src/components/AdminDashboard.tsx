@@ -237,7 +237,7 @@ export const AdminDashboard = ({ token, locale, onLogout }: Props) => {
         <div className="admin-list">
           {users.map((item) => (
             <article className="admin-list-item" key={item.id}>
-              <span className="account-avatar">{item.firstName.slice(0, 1).toUpperCase()}</span>
+              <span className="account-avatar">{item.avatarUrl ? <img src={item.avatarUrl} alt="" /> : item.firstName.slice(0, 1).toUpperCase()}</span>
               <div>
                 <strong>{item.firstName} {item.lastName}</strong>
                 <span>{item.email}</span>

@@ -3,16 +3,26 @@ import { AdminDashboard } from "./components/AdminDashboard";
 import { BookingFormPage } from "./components/BookingFormPage";
 import { MySessionsCalendar } from "./components/MySessionsCalendar";
 import { SpecialistDashboard } from "./components/RoleDashboards";
+import { SpecialistProfilePage } from "./components/SpecialistProfilePage";
+import { NotificationBell } from "./components/NotificationBell";
+import { SpecialistRequestsPage } from "./components/SpecialistRequestsPage";
+import { AccountSettingsPage } from "./components/AccountSettingsPage";
+import { getMyAppointments, getSpecialistRequests } from "./lib/scheduling-api";
 import {
   ApiError,
   getCurrentUser,
   login,
+  requestPasswordReset,
   register,
   type AuthUser,
 } from "./lib/auth-api";
 
 type AuthMode = "login" | "register";
 type Locale = "uk" | "en";
+type Page = "home" | "booking" | "sessions" | "specialist" | "requests" | "cabinet" | "settings";
+
+const pageFromLocation = (): Page => window.location.pathname === "/booking" ? "booking" : window.location.pathname === "/sessions" ? "sessions" : window.location.pathname === "/specialist/requests" ? "requests" : window.location.pathname === "/specialist/cabinet" ? "cabinet" : window.location.pathname === "/settings" ? "settings" : /^\/specialists\/[^/]+$/.test(window.location.pathname) ? "specialist" : "home";
+const specialistIdFromLocation = () => window.location.pathname.match(/^\/specialists\/([^/]+)$/)?.[1] ?? null;
 
 const TOKEN_KEY = "consultation_access_token";
 const LOCALE_KEY = "consultation_locale";
@@ -25,7 +35,7 @@ const translations = {
     heroEyebrow: "Онлайн-запис на консультації",
     heroTitle: "Зручний час — без дзвінків та очікування",
     heroLead:
-      "Оберіть спеціаліста, послугу та вільний час. Система перевірить розклад і одразу підтвердить запис.",
+      "Оберіть спеціаліста, послугу та вільний час. Після запису спеціаліст підтвердить консультацію.",
     book: "Записатися на консультацію",
     openAccount: "Відкрити особистий кабінет",
     seeHow: "Подивитися, як це працює →",
@@ -87,7 +97,7 @@ const translations = {
     heroEyebrow: "Online consultation booking",
     heroTitle: "A convenient time — no calls, no waiting",
     heroLead:
-      "Choose a specialist, service and available time. The system will check the schedule and confirm your booking instantly.",
+      "Choose a specialist, service and available time. The specialist will then confirm your consultation.",
     book: "Book a consultation",
     openAccount: "Open my account",
     seeHow: "See how it works →",
@@ -164,6 +174,7 @@ const AuthDialog = ({
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [passwordVisible, setPasswordVisible] = useState(false);
   const [error, setError] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -183,6 +194,7 @@ const AuthDialog = ({
   const changeMode = (nextMode: AuthMode) => {
     setMode(nextMode);
     setError("");
+    setResetMessage("");
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -318,6 +330,7 @@ const AuthDialog = ({
           </label>
 
           {error && <p className="form-message form-message--error" role="alert">{error}</p>}
+          {resetMessage && <p className="form-message" role="status">{resetMessage}</p>}
 
           <button className="button button--wide" type="submit" disabled={loading}>
             {loading
@@ -337,6 +350,7 @@ const AuthDialog = ({
               {mode === "login" ? copy.registerLink : copy.loginLink}
             </button>
           </p>
+          {mode === "login" && <button className="text-button auth-forgot" type="button" onClick={async (event) => { const input = event.currentTarget.form?.elements.namedItem("email") as HTMLInputElement | null; if (!input?.value || !input.validity.valid) { setResetMessage(locale === "uk" ? "Спочатку введіть коректну електронну пошту." : "Enter a valid email first."); return; } try { await requestPasswordReset(input.value); setResetMessage(locale === "uk" ? "Відновлення через код на пошту підключимо пізніше." : "Email code recovery will be added later."); } catch { setResetMessage(copy.errors.REQUEST_FAILED); } }}>{locale === "uk" ? "Забули пароль?" : "Forgot password?"}</button>}
         </form>
       </section>
     </div>
@@ -352,15 +366,30 @@ export const App = () => {
   const [accessToken, setAccessToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
-  const [page, setPage] = useState<"home" | "booking" | "sessions">(() => window.location.pathname === "/booking" ? "booking" : window.location.pathname === "/sessions" ? "sessions" : "home");
-  const [continueToPage, setContinueToPage] = useState<"booking" | "sessions" | null>(null);
+  const [page, setPage] = useState<Page>(() => pageFromLocation());
+  const [specialistId, setSpecialistId] = useState<string | null>(() => specialistIdFromLocation());
+  const [continueToPage, setContinueToPage] = useState<"booking" | "sessions" | "requests" | "cabinet" | "settings" | null>(null);
+  const [requestCount, setRequestCount] = useState(0);
+  const [requestVersion, setRequestVersion] = useState(0);
+  const [ownSpecialistId, setOwnSpecialistId] = useState<string | null>(null);
   const copy = translations[locale];
 
-  const navigate = (nextPage: "home" | "booking" | "sessions") => {
-    window.history.pushState(null, "", nextPage === "home" ? "/" : `/${nextPage}`);
+  const navigate = (nextPage: "home" | "booking" | "sessions" | "requests" | "cabinet" | "settings", search = "") => {
+    const path = nextPage === "home" ? "/" : nextPage === "requests" ? "/specialist/requests" : nextPage === "cabinet" ? "/specialist/cabinet" : `/${nextPage}`;
+    window.history.pushState(null, "", `${path}${search}`);
     setPage(nextPage);
     window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
   };
+  const openSpecialistProfile = (id: string, selectedServiceId: string) => {
+    if (window.location.pathname === "/booking") {
+      window.history.replaceState(null, "", `/booking?serviceId=${encodeURIComponent(selectedServiceId)}`);
+    }
+    window.history.pushState(null, "", `/specialists/${id}`);
+    setSpecialistId(id);
+    setPage("specialist");
+    window.scrollTo({ top: 0, left: 0, behavior: "smooth" });
+  };
+  const bookSpecialistService = (serviceId: string, selectedSpecialistId: string) => navigate("booking", `?serviceId=${encodeURIComponent(serviceId)}&specialistId=${encodeURIComponent(selectedSpecialistId)}`);
 
   const goToTop = () => {
     if (page !== "home") {
@@ -372,10 +401,38 @@ export const App = () => {
   };
 
   useEffect(() => {
-    const handleNavigation = () => setPage(window.location.pathname === "/booking" ? "booking" : window.location.pathname === "/sessions" ? "sessions" : "home");
+    const handleNavigation = () => { setPage(pageFromLocation()); setSpecialistId(specialistIdFromLocation()); };
     window.addEventListener("popstate", handleNavigation);
     return () => window.removeEventListener("popstate", handleNavigation);
   }, []);
+
+  useEffect(() => {
+    const menus = () => Array.from(document.querySelectorAll<HTMLDetailsElement>(".account-menu, .notification-menu"));
+    const closeOtherMenu = (event: Event) => {
+      const opened = event.target as HTMLDetailsElement;
+      if (!opened.matches(".account-menu, .notification-menu") || !opened.open) return;
+      menus().forEach((menu) => { if (menu !== opened) menu.open = false; });
+    };
+    const closeMenusOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      menus().forEach((menu) => { if (menu.open && !menu.contains(target)) menu.open = false; });
+    };
+    document.addEventListener("toggle", closeOtherMenu, true);
+    document.addEventListener("pointerdown", closeMenusOutside);
+    return () => {
+      document.removeEventListener("toggle", closeOtherMenu, true);
+      document.removeEventListener("pointerdown", closeMenusOutside);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (page !== "cabinet") return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = window.location.hash === "#schedule" ? ".specialist-grid" : ".specialist-profile-editor";
+      document.querySelector(target)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [page]);
 
   useEffect(() => {
     if (window.location.hash !== "#top" && window.location.hash !== "") return;
@@ -414,12 +471,32 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
-    if (sessionLoading || page === "home") return;
+    if (sessionLoading || page === "home" || page === "specialist") return;
     if (!user) {
       setContinueToPage(page);
       setAuthMode("login");
     }
   }, [page, sessionLoading, user]);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    void getMyAppointments(accessToken).catch(() => undefined);
+  }, [accessToken]);
+
+  useEffect(() => {
+    if (!accessToken || user?.role !== "SPECIALIST") { setRequestCount(0); setOwnSpecialistId(null); return; }
+    getSpecialistRequests(accessToken).then((requests) => { setRequestCount(requests.pendingCount); setOwnSpecialistId(requests.specialistId); }).catch(() => undefined);
+  }, [accessToken, user?.role, requestVersion]);
+
+  const openInternalHref = (href: string) => {
+    const url = new URL(href, window.location.origin);
+    if (url.pathname === "/sessions") return navigate("sessions", url.search);
+    if (url.pathname === "/specialist/requests") return navigate("requests");
+    if (url.pathname === "/specialist/cabinet") return navigate("cabinet", `${url.search}${url.hash}`);
+    if (url.pathname === "/settings") return navigate("settings");
+    const profileId = url.pathname.match(/^\/specialists\/([^/]+)$/)?.[1];
+    if (profileId) { window.history.pushState(null, "", `${url.pathname}${url.hash}`); setSpecialistId(profileId); setPage("specialist"); window.scrollTo({ top: 0 }); }
+  };
 
   const handleAuthenticated = (authenticatedUser: AuthUser, token: string) => {
     localStorage.setItem(TOKEN_KEY, token);
@@ -429,7 +506,7 @@ export const App = () => {
     if (continueToPage) {
       const destination = continueToPage;
       setContinueToPage(null);
-      navigate(destination);
+      navigate(destination, destination === "booking" ? window.location.search : "");
     }
   };
 
@@ -447,6 +524,18 @@ export const App = () => {
       return;
     }
     navigate("booking");
+  };
+
+  const openAccountProfile = () => {
+    if (!ownSpecialistId) return;
+    window.history.pushState(null, "", `/specialists/${ownSpecialistId}`);
+    setSpecialistId(ownSpecialistId);
+    setPage("specialist");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const openWorkSchedule = () => {
+    navigate("cabinet", "#schedule");
+    window.setTimeout(() => document.querySelector(".specialist-grid")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   };
 
   return (
@@ -469,11 +558,7 @@ export const App = () => {
           className="header-actions"
           aria-label={locale === "uk" ? "Основна навігація" : "Main navigation"}
         >
-          {page !== "home" ? (
-            <a className="header-link" href="/" onClick={(event) => { event.preventDefault(); navigate("home"); }}>
-              {locale === "uk" ? "На головну" : "Home"}
-            </a>
-          ) : (
+          {page === "home" && (
             <a className="header-link" href="#how-it-works">{copy.howItWorks}</a>
           )}
           {!sessionLoading && user && (
@@ -486,35 +571,20 @@ export const App = () => {
               </a>
             </>
           )}
-          <div className="language-switcher" aria-label={copy.languageLabel}>
-            <button
-              className={locale === "uk" ? "is-active" : ""}
-              onClick={() => setLocale("uk")}
-              aria-pressed={locale === "uk"}
-            >
-              UA
-            </button>
-            <span aria-hidden="true">/</span>
-            <button
-              className={locale === "en" ? "is-active" : ""}
-              onClick={() => setLocale("en")}
-              aria-pressed={locale === "en"}
-            >
-              EN
-            </button>
-          </div>
           {!sessionLoading &&
             (user ? (
               <details className="account-menu">
                 <summary className="user-chip" aria-label={locale === "uk" ? "Меню облікового запису" : "Account menu"}>
-                  <span className="user-chip__avatar">{user.firstName.slice(0, 1).toUpperCase()}</span>
+                  <span className="user-chip__avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : user.firstName.slice(0, 1).toUpperCase()}</span>
                   <span className="user-chip__name">{user.firstName}</span>
                   <span className="user-chip__chevron" aria-hidden="true">⌄</span>
                 </summary>
-                <div className="account-menu__popover">
+                <div className="account-menu__popover" onClick={(event) => { const button = (event.target as HTMLElement).closest("button"); if (button && !button.disabled) (event.currentTarget.closest("details") as HTMLDetailsElement).open = false; }}>
                   <div className="account-menu__identity"><strong>{user.firstName} {user.lastName}</strong><span>{user.email}</span></div>
-                  <button type="button" disabled><span>{locale === "uk" ? "Профіль" : "Profile"}</span><small>{locale === "uk" ? "Незабаром" : "Soon"}</small></button>
-                  <button type="button" disabled><span>{locale === "uk" ? "Налаштування" : "Settings"}</span><small>{locale === "uk" ? "Незабаром" : "Soon"}</small></button>
+                  <div className="account-menu__mobile-links"><button type="button" onClick={() => navigate("booking")}>{locale === "uk" ? "Записатися" : "Book"}</button><button type="button" onClick={() => navigate("sessions")}>{locale === "uk" ? "Мої сеанси" : "My sessions"}</button></div>
+                  <button type="button" onClick={user.role === "SPECIALIST" ? openAccountProfile : () => navigate("settings")}><span>{locale === "uk" ? "Профіль" : "Profile"}</span><small>{locale === "uk" ? (user.role === "SPECIALIST" ? "Переглянути" : "Особисті дані") : (user.role === "SPECIALIST" ? "View" : "Personal details")}</small></button>
+                  <button type="button" onClick={() => navigate("settings")}><span>{locale === "uk" ? "Налаштування" : "Settings"}</span><small>{locale === "uk" ? "Дані та безпека" : "Details and security"}</small></button>
+                  {user.role === "SPECIALIST" && <><p className="account-menu__group">{locale === "uk" ? "Кабінет спеціаліста" : "Specialist workspace"}</p><button type="button" onClick={() => navigate("requests")}><span>{locale === "uk" ? "Заявки" : "Requests"}{requestCount > 0 && <b className="menu-count">{requestCount}</b>}</span><small>{locale === "uk" ? "Підтвердження" : "Confirmations"}</small></button><button type="button" onClick={openWorkSchedule}><span>{locale === "uk" ? "Графік і консультації" : "Schedule and consultations"}</span><small>{locale === "uk" ? "Налаштувати" : "Set up"}</small></button></>}
                   <button type="button" className="account-menu__logout" onClick={logout}>{locale === "uk" ? "Вийти" : "Sign out"}</button>
                 </div>
               </details>
@@ -523,17 +593,27 @@ export const App = () => {
                 {copy.signIn}
               </button>
             ))}
+          {!sessionLoading && user && accessToken && <NotificationBell token={accessToken} locale={locale} onOpen={openInternalHref} />}
+          <button className="language-toggle" onClick={() => setLocale(locale === "uk" ? "en" : "uk")} aria-label={copy.languageLabel}>{locale === "uk" ? "UA" : "EN"}</button>
         </nav>
       </header>
 
       {page === "booking" && user && accessToken ? (
         <main id="top" className="booking-page-main">
-          <BookingFormPage token={accessToken} user={user} locale={locale} onComplete={() => navigate("sessions")} />
+          <BookingFormPage token={accessToken} user={user} locale={locale} onComplete={() => navigate("sessions")} onViewProfile={openSpecialistProfile} />
         </main>
       ) : page === "sessions" && user && accessToken ? (
         <main id="top" className="booking-page-main">
           <MySessionsCalendar token={accessToken} user={user} locale={locale} />
         </main>
+      ) : page === "requests" && user?.role === "SPECIALIST" && accessToken ? (
+        <SpecialistRequestsPage token={accessToken} locale={locale} onOpenSession={(id) => navigate("sessions", `?appointmentId=${encodeURIComponent(id)}`)} onChanged={() => setRequestVersion((value) => value + 1)} />
+      ) : page === "cabinet" && user?.role === "SPECIALIST" && accessToken ? (
+        <main id="top" className="specialist-cabinet-page"><SpecialistDashboard token={accessToken} user={user} locale={locale} onLogout={logout} view="cabinet" /></main>
+      ) : page === "settings" && user && accessToken ? (
+        <main id="top" className="settings-page"><AccountSettingsPage token={accessToken} user={user} locale={locale} onUserUpdated={setUser}>{user.role === "SPECIALIST" && <SpecialistDashboard token={accessToken} user={user} locale={locale} onLogout={logout} view="profile-settings" />}</AccountSettingsPage></main>
+      ) : page === "specialist" && specialistId ? (
+        <SpecialistProfilePage specialistId={specialistId} locale={locale} token={accessToken} user={user} onBack={() => window.history.length > 1 ? window.history.back() : navigate("home")} onBook={bookSpecialistService} onRequireAuth={() => setAuthMode("login")} />
       ) : (
       <main id="top">
         <section className="hero">
@@ -591,9 +671,6 @@ export const App = () => {
           <AdminDashboard token={accessToken} locale={locale} onLogout={logout} />
         )}
 
-        {user?.role === "SPECIALIST" && accessToken && (
-          <SpecialistDashboard token={accessToken} user={user} locale={locale} onLogout={logout} />
-        )}
       </main>
 
       )}

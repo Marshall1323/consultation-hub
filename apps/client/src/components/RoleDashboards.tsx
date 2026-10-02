@@ -11,8 +11,8 @@ import {
   getSpecialistDashboard,
   getSpecialists,
   saveSpecialistSchedule,
+  saveSpecialistProfile,
   saveSpecialistServiceSettings,
-  updateSpecialistAppointment,
   type Appointment,
   type Service,
   type Specialist,
@@ -149,7 +149,7 @@ export const ClientDashboard = ({ token, user, locale, onLogout }: CommonProps) 
 const minutesToTime = (minutes: number) => `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
 const timeToMinutes = (value: string) => { const [hour, minute] = value.split(":").map(Number); return hour! * 60 + minute!; };
 
-export const SpecialistDashboard = ({ token, locale, onLogout }: CommonProps) => {
+export const SpecialistDashboard = ({ token, locale, onLogout, view = "cabinet" }: CommonProps & { view?: "cabinet" | "profile-settings" }) => {
   const uk = locale === "uk";
   const days = uk ? ["Неділя", "Понеділок", "Вівторок", "Середа", "Четвер", "П’ятниця", "Субота"] : ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const [data, setData] = useState<SpecialistDashboardData | null>(null);
@@ -196,19 +196,37 @@ export const SpecialistDashboard = ({ token, locale, onLogout }: CommonProps) =>
     finally { setSaving(false); }
   };
 
+  const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    setSaving(true); setMessage("");
+    try {
+      const specialization = String(values.get("specialization") ?? "");
+      const description = String(values.get("description") ?? "");
+      await saveSpecialistProfile(token, {
+        specializationUk: specialization, specializationEn: specialization,
+        descriptionUk: description, descriptionEn: description,
+        experienceStartYear: Number(values.get("experienceStartYear")),
+        languages: String(values.get("languages") ?? "").split(",").map((item) => item.trim()).filter(Boolean),
+      });
+      setMessage(uk ? "Профіль збережено." : "Profile saved."); await load();
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Error"); }
+    finally { setSaving(false); }
+  };
+
   if (!data) return <section className="portal-section" id="account"><p>{message || (uk ? "Завантаження…" : "Loading…")}</p></section>;
 
   return (
-    <section className="portal-section" id="account">
-      <div className="portal-heading"><div><p className="eyebrow">{uk ? "Кабінет спеціаліста" : "Specialist dashboard"}</p><h2>{uk ? "Графік і консультації" : "Schedule and consultations"}</h2></div><button className="button button--quiet" onClick={onLogout}>{uk ? "Вийти" : "Sign out"}</button></div>
+    <section className={`portal-section specialist-dashboard specialist-dashboard--${view}`} id="account">
+      <div className="portal-heading"><div><p className="eyebrow">{view === "profile-settings" ? (uk ? "Налаштування" : "Settings") : (uk ? "Кабінет спеціаліста" : "Specialist dashboard")}</p><h2>{view === "profile-settings" ? (uk ? "Редагування профілю" : "Edit profile") : (uk ? "Графік і консультації" : "Schedule and consultations")}</h2></div><button className="button button--quiet" onClick={onLogout}>{uk ? "Вийти" : "Sign out"}</button></div>
       <div className="dashboard-stats"><span><strong>{data.stats.upcoming}</strong>{uk ? "Майбутніх" : "Upcoming"}</span><span><strong>{data.stats.total}</strong>{uk ? "Усього" : "Total"}</span><span><strong>{data.stats.bookedMinutes}</strong>{uk ? "Зайнятих хвилин" : "Booked minutes"}</span></div>
       {message && <p className="admin-message">{message}</p>}
+      <form className="specialist-profile-editor" onSubmit={saveProfile}><div className="profile-editor-heading"><div><p className="eyebrow">{uk ? "Професійні дані" : "Professional details"}</p><h3>{uk ? "Як вас бачать клієнти" : "How clients see you"}</h3><small>{uk ? "Заповніть профіль тією мовою, якою консультуєте." : "Write the profile in the language you use for consultations."}</small></div>{data.profile.photoUrl ? <img src={data.profile.photoUrl} alt="" /> : <span>{uk ? "Фото" : "Photo"}</span>}</div><div className="profile-editor-grid"><label className="profile-editor-wide"><span>{uk ? "Спеціалізація" : "Specialization"}</span><input name="specialization" defaultValue={data.profile.specializationUk || data.profile.specializationEn || ""} required minLength={2} /></label><label><span>{uk ? "Рік початку професійної діяльності" : "Professional career start year"}</span><input name="experienceStartYear" type="number" min="1950" max={new Date().getFullYear()} defaultValue={data.profile.experienceStartYear ?? new Date().getFullYear()} required /></label><label><span>{uk ? "Мови консультації через кому" : "Consultation languages, comma separated"}</span><input name="languages" defaultValue={data.profile.languages.join(", ")} placeholder={uk ? "Українська, English" : "English, Ukrainian"} required /></label><label className="profile-editor-wide"><span>{uk ? "Опис" : "Description"}</span><textarea name="description" defaultValue={data.profile.descriptionUk ?? data.profile.descriptionEn ?? ""} minLength={20} maxLength={2000} required /></label></div><button className="button" disabled={saving}>{uk ? "Зберегти професійні дані" : "Save professional details"}</button></form>
       <div className="appointments-panel specialist-prices"><h3>{uk ? "Мої послуги" : "My services"}</h3><p className="empty-state">{uk ? "Клієнт побачить вашу ціну та точний час завершення консультації." : "Clients see your price and the exact consultation end time."}</p><div className="service-price-list">{data.profile.services.map((assignment) => <form key={assignment.service.id} onSubmit={(event) => void saveServiceSettings(event, assignment.service.id)}><strong>{uk ? assignment.service.nameUk : assignment.service.nameEn}</strong><label><span>{uk ? "Ціна" : "Price"}</span><input name="price" type="number" min="0" step="1" defaultValue={(assignment.priceCents ?? assignment.service.priceCents ?? 0) / 100} /><small>₴</small></label><label><span>{uk ? "Тривалість" : "Duration"}</span><select name="durationMin" defaultValue={assignment.durationMin ?? assignment.service.durationMin}><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="50">50 min</option><option value="60">1 {uk ? "год" : "hour"}</option><option value="90">1.5 {uk ? "год" : "hours"}</option><option value="120">2 {uk ? "год" : "hours"}</option></select></label><button className="small-button" disabled={saving}>{uk ? "Зберегти" : "Save"}</button></form>)}</div></div>
       <div className="specialist-grid">
         <div className="schedule-editor"><h3>{uk ? "Щотижневий графік" : "Weekly schedule"}</h3>{days.map((day, weekday) => { const interval = schedule.find((item) => item.weekday === weekday); return <div className="schedule-row" key={day}><label><input type="checkbox" checked={Boolean(interval)} onChange={(event) => setDay(weekday, event.target.checked)} /> {day}</label><input type="time" disabled={!interval} value={interval ? minutesToTime(interval.startMinute) : "09:00"} onChange={(event) => updateDay(weekday, "startMinute", timeToMinutes(event.target.value))} /><span>—</span><input type="time" disabled={!interval} value={interval ? minutesToTime(interval.endMinute) : "17:00"} onChange={(event) => updateDay(weekday, "endMinute", timeToMinutes(event.target.value))} /></div>; })}<button className="button" disabled={saving} onClick={() => void save()}>{uk ? "Зберегти графік" : "Save schedule"}</button></div>
         <div className="exceptions-panel"><form className="admin-form" onSubmit={addException}><h3>{uk ? "Виняток або перерва" : "Exception or break"}</h3><label className="field"><span>{uk ? "Початок" : "Start"}</span><input name="startsAt" type="datetime-local" required /></label><label className="field"><span>{uk ? "Кінець" : "End"}</span><input name="endsAt" type="datetime-local" required /></label><label className="field"><span>{uk ? "Тип" : "Type"}</span><select name="isAvailable" defaultValue="false"><option value="false">{uk ? "Недоступний час" : "Unavailable"}</option><option value="true">{uk ? "Додатковий робочий час" : "Additional availability"}</option></select></label><label className="field"><span>{uk ? "Примітка" : "Note"}</span><input name="note" /></label><button className="button" disabled={saving}>{uk ? "Додати" : "Add"}</button></form><div className="exception-list">{data.exceptions.map((item) => <article key={item.id}><div><strong>{dateTime(item.startsAt, locale)}</strong><span> — {dateTime(item.endsAt, locale)}</span></div><p>{item.note || (item.isAvailable ? (uk ? "Додатковий час" : "Additional time") : (uk ? "Недоступно" : "Unavailable"))}</p><button className="small-button" onClick={() => void deleteScheduleException(token, item.id).then(load)}>{uk ? "Видалити" : "Delete"}</button></article>)}</div></div>
       </div>
-      <div className="appointments-panel specialist-appointments"><h3>{uk ? "Записи клієнтів" : "Client appointments"}</h3>{data.appointments.length === 0 ? <p className="empty-state">{uk ? "Записів поки немає." : "No appointments yet."}</p> : data.appointments.map((appointment) => <AppointmentCard key={appointment.id} appointment={appointment} locale={locale} actions={<><span>{appointment.client.firstName} {appointment.client.lastName}</span>{appointment.status === "CONFIRMED" && <><button className="small-button" onClick={() => void updateSpecialistAppointment(token, appointment.id, "COMPLETED").then(load)}>{uk ? "Завершити" : "Complete"}</button><button className="small-button" onClick={() => void updateSpecialistAppointment(token, appointment.id, "CANCELLED").then(load)}>{uk ? "Скасувати" : "Cancel"}</button></>}</>} />)}</div>
     </section>
   );
 };

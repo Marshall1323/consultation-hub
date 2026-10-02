@@ -2,7 +2,7 @@ import { compare, hash } from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { prisma } from "../../lib/prisma.js";
 
-const PASSWORD_ROUNDS = 12;
+export const PASSWORD_ROUNDS = 12;
 
 type RegisterInput = {
   email: string;
@@ -11,11 +11,12 @@ type RegisterInput = {
   lastName: string;
 };
 
-const publicUserSelect = {
+export const publicUserSelect = {
   id: true,
   email: true,
   firstName: true,
   lastName: true,
+  avatarUrl: true,
   role: true,
   isActive: true,
   createdAt: true,

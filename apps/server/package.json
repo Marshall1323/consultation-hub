@@ -11,6 +11,7 @@
     "test": "tsx --test src/**/*.test.ts",
     "test:integration": "tsx src/scripts/booking-smoke.ts",
     "seed:demo": "tsx src/scripts/seed-demo-catalog.ts",
+    "seed:showcase": "tsx src/scripts/seed-specialist-showcase.ts",
     "admin:create": "tsx src/scripts/create-admin.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev"

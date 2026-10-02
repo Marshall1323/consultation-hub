@@ -20,18 +20,45 @@ enum AppointmentStatus {
   COMPLETED
 }
 
+enum NotificationType {
+  BOOKING_REQUEST
+  BOOKING_CONFIRMED
+  BOOKING_REJECTED
+  REVIEW_RECEIVED
+}
+
 model User {
   id              String             @id @default(uuid())
   email           String             @unique
   passwordHash    String
   firstName       String
   lastName        String
+  avatarUrl       String?
   role            UserRole           @default(CLIENT)
   isActive        Boolean            @default(true)
   specialist      SpecialistProfile?
   clientBookings  Appointment[]      @relation("ClientAppointments")
+  reviews          Review[]           @relation("ClientReviews")
+  notifications    Notification[]
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  titleUk   String
+  titleEn   String
+  bodyUk    String
+  bodyEn    String
+  href      String
+  readAt    DateTime?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
 }
 
 model SpecialistProfile {
@@ -43,14 +70,35 @@ model SpecialistProfile {
   specializationEn String?
   descriptionUk   String?
   descriptionEn   String?
+  photoUrl        String?
+  experienceStartYear Int?
+  languages       String[]            @default([])
   isActive       Boolean            @default(true)
   slotStepMin   Int                @default(15)
   services      SpecialistService[]
   schedules     WorkSchedule[]
   exceptions    ScheduleException[]
   appointments  Appointment[]
+  reviews       Review[]
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
+}
+
+model Review {
+  id            String             @id @default(uuid())
+  appointmentId String             @unique
+  appointment   Appointment        @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  clientId      String
+  client        User               @relation("ClientReviews", fields: [clientId], references: [id], onDelete: Cascade)
+  specialistId  String
+  specialist    SpecialistProfile  @relation(fields: [specialistId], references: [id], onDelete: Cascade)
+  rating        Int
+  comment       String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([specialistId, createdAt])
+  @@index([clientId])
 }
 
 model Service {
@@ -116,10 +164,11 @@ model Appointment {
   service       Service            @relation(fields: [serviceId], references: [id])
   startsAt      DateTime
   endsAt        DateTime
-  status        AppointmentStatus  @default(CONFIRMED)
+  status        AppointmentStatus  @default(PENDING)
   clientNote    String?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
+  review        Review?
 
   @@index([specialistId, startsAt, endsAt])
   @@index([clientId, startsAt])

@@ -5,6 +5,7 @@ export type AuthUser = {
   email: string;
   firstName: string;
   lastName: string;
+  avatarUrl: string | null;
   role: UserRole;
   createdAt: string;
 };
@@ -73,3 +74,12 @@ export const getCurrentUser = (token: string) =>
   request<{ user: AuthUser }>("/auth/me", {
     headers: { Authorization: `Bearer ${token}` },
   });
+
+export const updateAccountProfile = (token: string, input: Pick<AuthUser, "firstName" | "lastName" | "email" | "avatarUrl">) =>
+  request<{ user: AuthUser }>("/auth/profile", { method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(input) });
+
+export const changeAccountPassword = (token: string, input: { currentPassword: string; newPassword: string }) =>
+  request<{ message: string }>("/auth/password", { method: "PATCH", headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(input) });
+
+export const requestPasswordReset = (email: string) =>
+  request<{ available: boolean; message: string }>("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });

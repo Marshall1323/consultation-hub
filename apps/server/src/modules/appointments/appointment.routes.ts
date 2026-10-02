@@ -35,16 +35,49 @@ appointmentRouter.get("/availability", async (request, response) => {
 
 appointmentRouter.get("/appointments/me", requireAuth, async (request, response) => {
   const { userId } = (request as AuthenticatedRequest).auth;
-  const appointments = await prisma.appointment.findMany({
-    where: {
-      OR: [
-        { clientId: userId },
-        { specialist: { userId } },
-      ],
+  type CalendarRow = {
+    id: string; clientId: string; specialistId: string; serviceId: string; priceCents: number | null;
+    startsAt: Date; endsAt: Date; status: AppointmentStatus; clientNote: string | null; createdAt: Date; updatedAt: Date;
+    clientFirstName: string; clientLastName: string; clientEmail: string; clientAvatarUrl: string | null;
+    specializationUk: string; specializationEn: string | null; specialistPhotoUrl: string | null; specialistUserId: string;
+    specialistFirstName: string; specialistLastName: string; specialistAvatarUrl: string | null;
+    serviceNameUk: string; serviceNameEn: string; serviceDurationMin: number; servicePriceCents: number | null;
+  };
+  const rows = await prisma.$queryRaw<CalendarRow[]>(Prisma.sql`
+    SELECT
+      appointment."id", appointment."clientId", appointment."specialistId", appointment."serviceId",
+      appointment."priceCents", appointment."startsAt", appointment."endsAt", appointment."status",
+      appointment."clientNote", appointment."createdAt", appointment."updatedAt",
+      client."firstName" AS "clientFirstName", client."lastName" AS "clientLastName",
+      client."email" AS "clientEmail",
+      CASE WHEN specialist."userId" = ${userId} THEN client."avatarUrl" ELSE NULL END AS "clientAvatarUrl",
+      specialist."specializationUk", specialist."specializationEn",
+      CASE WHEN appointment."clientId" = ${userId} THEN specialist."photoUrl" ELSE NULL END AS "specialistPhotoUrl",
+      specialist_user."id" AS "specialistUserId", specialist_user."firstName" AS "specialistFirstName",
+      specialist_user."lastName" AS "specialistLastName",
+      CASE WHEN appointment."clientId" = ${userId} THEN specialist_user."avatarUrl" ELSE NULL END AS "specialistAvatarUrl",
+      service."nameUk" AS "serviceNameUk", service."nameEn" AS "serviceNameEn",
+      service."durationMin" AS "serviceDurationMin", service."priceCents" AS "servicePriceCents"
+    FROM "Appointment" AS appointment
+    JOIN "User" AS client ON client."id" = appointment."clientId"
+    JOIN "SpecialistProfile" AS specialist ON specialist."id" = appointment."specialistId"
+    JOIN "User" AS specialist_user ON specialist_user."id" = specialist."userId"
+    JOIN "Service" AS service ON service."id" = appointment."serviceId"
+    WHERE appointment."clientId" = ${userId} OR specialist."userId" = ${userId}
+    ORDER BY appointment."startsAt" DESC
+  `);
+  const appointments = rows.map((row) => ({
+    id: row.id, clientId: row.clientId, specialistId: row.specialistId, serviceId: row.serviceId,
+    priceCents: row.priceCents, startsAt: row.startsAt, endsAt: row.endsAt, status: row.status,
+    clientNote: row.clientNote, createdAt: row.createdAt, updatedAt: row.updatedAt,
+    client: { id: row.clientId, firstName: row.clientFirstName, lastName: row.clientLastName, email: row.clientEmail, avatarUrl: row.clientAvatarUrl },
+    specialist: {
+      id: row.specialistId, specializationUk: row.specializationUk, specializationEn: row.specializationEn,
+      photoUrl: row.specialistPhotoUrl,
+      user: { id: row.specialistUserId, firstName: row.specialistFirstName, lastName: row.specialistLastName, avatarUrl: row.specialistAvatarUrl },
     },
-    include: appointmentInclude,
-    orderBy: { startsAt: "desc" },
-  });
+    service: { id: row.serviceId, nameUk: row.serviceNameUk, nameEn: row.serviceNameEn, durationMin: row.serviceDurationMin, priceCents: row.servicePriceCents },
+  }));
   response.json({ appointments });
 });
 
@@ -90,7 +123,7 @@ appointmentRouter.post(
             throw new AvailabilityError("CLIENT_TIME_CONFLICT", "У вас вже є запис на цей час", 409);
           }
 
-          return transaction.appointment.create({
+          const created = await transaction.appointment.create({
             data: {
               clientId: userId,
               specialistId: parsed.data.specialistId,
@@ -99,10 +132,23 @@ appointmentRouter.post(
               startsAt: slot.start,
               endsAt: slot.end,
               clientNote: parsed.data.clientNote || null,
-              status: AppointmentStatus.CONFIRMED,
+              status: AppointmentStatus.PENDING,
             },
             include: appointmentInclude,
           });
+          const specialist = await transaction.specialistProfile.findUnique({ where: { id: parsed.data.specialistId }, select: { userId: true } });
+          if (specialist) {
+            await transaction.notification.create({ data: {
+              userId: specialist.userId,
+              type: "BOOKING_REQUEST",
+              titleUk: "Новий запит на консультацію",
+              titleEn: "New consultation request",
+              bodyUk: `${created.client.firstName} ${created.client.lastName} очікує на підтвердження`,
+              bodyEn: `${created.client.firstName} ${created.client.lastName} is waiting for confirmation`,
+              href: "/specialist/requests",
+            } });
+          }
+          return created;
         }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
         response.status(201).json({ appointment });
@@ -112,7 +158,10 @@ appointmentRouter.post(
           response.status(error.status).json({ code: error.code, message: error.message });
           return;
         }
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034" && attempt < 2) continue;
+        const retryableTransactionError =
+          error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034"
+          || error instanceof Prisma.PrismaClientUnknownRequestError && error.message.includes("40P01");
+        if (retryableTransactionError && attempt < 2) continue;
         if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2004") {
           response.status(409).json({ code: "SLOT_UNAVAILABLE", message: "Обраний час уже зайнятий" });
           return;
