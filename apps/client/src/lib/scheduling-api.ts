@@ -57,6 +57,17 @@ export type Appointment = {
     user: { id: string; firstName: string; lastName: string; avatarUrl: string | null };
   };
   service: Pick<Service, "id" | "nameUk" | "nameEn" | "durationMin" | "priceCents">;
+  rescheduleRequest: RescheduleRequest | null;
+};
+
+export type RescheduleRequest = {
+  id: string;
+  appointmentId: string;
+  proposedStartsAt: string;
+  proposedEndsAt: string;
+  status: "PENDING" | "ACCEPTED" | "REJECTED";
+  createdAt: string;
+  decidedAt: string | null;
 };
 
 type AppointmentsResponse = { appointments: Appointment[] };
@@ -92,8 +103,8 @@ const request = async <T>(path: string, options?: RequestInit, token?: string): 
 };
 
 export const getServices = () => request<{ services: Service[] }>("/services");
-export const getSpecialists = (serviceId: string) =>
-  request<{ specialists: Specialist[] }>(`/specialists?serviceId=${encodeURIComponent(serviceId)}`);
+export const getSpecialists = (serviceId?: string) =>
+  request<{ specialists: Specialist[] }>(serviceId ? `/specialists?serviceId=${encodeURIComponent(serviceId)}` : "/specialists");
 export const getSpecialistProfile = (specialistId: string) =>
   request<{ profile: SpecialistProfile }>(`/specialists/${encodeURIComponent(specialistId)}/profile`);
 export const getNearestAvailability = (specialistId: string, serviceId: string) =>
@@ -129,6 +140,16 @@ export const cancelAppointment = async (token: string, appointmentId: string) =>
   invalidateAppointmentsCache(token);
   return result;
 };
+export const createRescheduleRequest = async (token: string, appointmentId: string, startsAt: string) => {
+  const result = await request<{ rescheduleRequest: RescheduleRequest }>(`/appointments/${appointmentId}/reschedule-requests`, {
+    method: "POST",
+    body: JSON.stringify({ startsAt }),
+  }, token);
+  invalidateAppointmentsCache(token);
+  specialistRequestCache.delete(token);
+  specialistRequestPromises.delete(token);
+  return result;
+};
 
 export type SpecialistDashboardData = {
   profile: { id: string; slotStepMin: number; specializationUk: string; specializationEn: string | null; descriptionUk: string | null; descriptionEn: string | null; photoUrl: string | null; experienceStartYear: number | null; languages: string[]; services: Array<{ priceCents: number | null; durationMin: number | null; service: Service }> };
@@ -138,7 +159,7 @@ export type SpecialistDashboardData = {
   stats: { total: number; upcoming: number; bookedMinutes: number };
 };
 
-export const getSpecialistDashboard = (token: string) => request<SpecialistDashboardData>("/specialist/dashboard", undefined, token);
+export const getSpecialistDashboard = (token: string, profileOnly = false) => request<SpecialistDashboardData>(profileOnly ? "/specialist/dashboard?scope=profile" : "/specialist/dashboard", undefined, token);
 export const saveSpecialistSchedule = (token: string, intervals: WorkInterval[], slotStepMin: number) =>
   request("/specialist/schedule", { method: "PUT", body: JSON.stringify({ intervals, slotStepMin }) }, token);
 export const saveSpecialistServiceSettings = (token: string, serviceId: string, priceCents: number, durationMin: number) =>
@@ -164,7 +185,15 @@ export const updateSpecialistAppointment = async (token: string, appointmentId: 
 };
 
 export type SpecialistRequest = Pick<Appointment, "id" | "startsAt" | "endsAt" | "status" | "clientNote" | "priceCents" | "client" | "service">;
-export type SpecialistRequests = { specialistId: string; pending: SpecialistRequest[]; processed: SpecialistRequest[]; pendingCount: number };
+export type SpecialistRescheduleRequest = RescheduleRequest & { appointment: SpecialistRequest };
+export type SpecialistRequests = {
+  specialistId: string;
+  pending: SpecialistRequest[];
+  processed: SpecialistRequest[];
+  reschedulePending: SpecialistRescheduleRequest[];
+  rescheduleProcessed: SpecialistRescheduleRequest[];
+  pendingCount: number;
+};
 export const getSpecialistRequests = (token: string) => {
   const cached = specialistRequestCache.get(token);
   if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
@@ -179,10 +208,20 @@ export const getSpecialistRequests = (token: string) => {
   specialistRequestPromises.set(token, nextRequest);
   return nextRequest;
 };
+export const decideRescheduleRequest = async (token: string, requestId: string, status: "ACCEPTED" | "REJECTED") => {
+  const result = await request(`/specialist/reschedule-requests/${requestId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ status }),
+  }, token);
+  invalidateAppointmentsCache(token);
+  specialistRequestCache.delete(token);
+  specialistRequestPromises.delete(token);
+  return result;
+};
 
 export type Notification = {
   id: string;
-  type: "BOOKING_REQUEST" | "BOOKING_CONFIRMED" | "BOOKING_REJECTED" | "REVIEW_RECEIVED";
+  type: "BOOKING_REQUEST" | "BOOKING_CONFIRMED" | "BOOKING_REJECTED" | "REVIEW_RECEIVED" | "RESCHEDULE_REQUEST" | "RESCHEDULE_ACCEPTED" | "RESCHEDULE_REJECTED";
   titleUk: string;
   titleEn: string;
   bodyUk: string;

@@ -1,13 +1,13 @@
-import { AppointmentStatus, UserRole } from "@prisma/client";
+import { AppointmentStatus, Prisma, UserRole } from "@prisma/client";
 import { Router } from "express";
 import type { Response } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireRole, type AuthenticatedRequest } from "../auth/auth.middleware.js";
 import { appointmentInclude } from "./appointment.select.js";
-import { appointmentStatusSchema, exceptionSchema, scheduleSchema } from "./appointment.schemas.js";
+import { appointmentStatusSchema, decideRescheduleRequestSchema, exceptionSchema, scheduleSchema } from "./appointment.schemas.js";
+import { AvailabilityError, getAvailableSlots, localDate } from "./availability.service.js";
 import { specialistServiceSettingsSchema } from "../admin/admin.schemas.js";
 import { z } from "zod";
-import { completeExpiredAppointments } from "./appointment-lifecycle.service.js";
 
 export const specialistRouter = Router();
 specialistRouter.use(requireAuth, requireRole(UserRole.SPECIALIST));
@@ -29,26 +29,48 @@ const getProfile = async (userId: string) => prisma.specialistProfile.findUnique
 });
 
 specialistRouter.get("/dashboard", async (request, response) => {
-  await completeExpiredAppointments();
   const profile = await getProfile((request as unknown as AuthenticatedRequest).auth.userId);
   if (!profile) return response.status(404).json({ code: "PROFILE_NOT_FOUND", message: "Профіль спеціаліста не знайдено" });
 
-  const [schedule, exceptions, appointments] = await Promise.all([
+  if (request.query.scope === "profile") {
+    return response.json({
+      profile,
+      schedule: [],
+      exceptions: [],
+      appointments: [],
+      stats: { total: 0, upcoming: 0, bookedMinutes: 0 },
+    });
+  }
+
+  const now = new Date();
+  await prisma.appointment.updateMany({
+    where: {
+      specialistId: profile.id,
+      status: AppointmentStatus.CONFIRMED,
+      endsAt: { lte: now },
+    },
+    data: { status: AppointmentStatus.COMPLETED },
+  });
+
+  const [schedule, exceptions, total, confirmedAppointments] = await Promise.all([
     prisma.workSchedule.findMany({ where: { specialistId: profile.id }, orderBy: [{ weekday: "asc" }, { startMinute: "asc" }] }),
-    prisma.scheduleException.findMany({ where: { specialistId: profile.id, endsAt: { gt: new Date() } }, orderBy: { startsAt: "asc" } }),
-    prisma.appointment.findMany({ where: { specialistId: profile.id }, include: appointmentInclude, orderBy: { startsAt: "asc" } }),
+    prisma.scheduleException.findMany({ where: { specialistId: profile.id, endsAt: { gt: now } }, orderBy: { startsAt: "asc" } }),
+    prisma.appointment.count({ where: { specialistId: profile.id } }),
+    prisma.appointment.findMany({
+      where: { specialistId: profile.id, status: AppointmentStatus.CONFIRMED },
+      select: { startsAt: true, endsAt: true },
+    }),
   ]);
 
-  const confirmed = appointments.filter((item) => item.status === AppointmentStatus.CONFIRMED);
   response.json({
     profile,
     schedule,
     exceptions,
-    appointments,
+    appointments: [],
     stats: {
-      total: appointments.length,
-      upcoming: confirmed.filter((item) => item.startsAt > new Date()).length,
-      bookedMinutes: confirmed.reduce((sum, item) => sum + Math.round((item.endsAt.getTime() - item.startsAt.getTime()) / 60_000), 0),
+      total,
+      upcoming: confirmedAppointments.filter((item) => item.startsAt > now).length,
+      bookedMinutes: confirmedAppointments.reduce((sum, item) => sum + Math.round((item.endsAt.getTime() - item.startsAt.getTime()) / 60_000), 0),
     },
   });
 });
@@ -59,7 +81,7 @@ specialistRouter.get("/requests", async (request, response) => {
     select: { id: true },
   });
   if (!profile) return response.status(404).json({ code: "PROFILE_NOT_FOUND", message: "Профіль спеціаліста не знайдено" });
-  const appointments = await prisma.appointment.findMany({
+  const [appointments, rescheduleRequests] = await Promise.all([prisma.appointment.findMany({
     where: { specialistId: profile.id },
     select: {
       id: true,
@@ -73,12 +95,28 @@ specialistRouter.get("/requests", async (request, response) => {
     },
     orderBy: { createdAt: "desc" },
     take: 100,
-  });
+  }), prisma.appointmentRescheduleRequest.findMany({
+    where: { appointment: { specialistId: profile.id } },
+    include: {
+      appointment: {
+        select: {
+          id: true, startsAt: true, endsAt: true, status: true, clientNote: true, priceCents: true,
+          client: { select: { id: true, firstName: true, lastName: true, email: true, avatarUrl: true } },
+          service: { select: { id: true, nameUk: true, nameEn: true, durationMin: true, priceCents: true } },
+        },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  })]);
   response.json({
     specialistId: profile.id,
     pending: appointments.filter((item) => item.status === AppointmentStatus.PENDING),
     processed: appointments.filter((item) => item.status !== AppointmentStatus.PENDING),
-    pendingCount: appointments.filter((item) => item.status === AppointmentStatus.PENDING).length,
+    reschedulePending: rescheduleRequests.filter((item) => item.status === "PENDING"),
+    rescheduleProcessed: rescheduleRequests.filter((item) => item.status !== "PENDING"),
+    pendingCount: appointments.filter((item) => item.status === AppointmentStatus.PENDING).length
+      + rescheduleRequests.filter((item) => item.status === "PENDING").length,
   });
 });
 
@@ -198,4 +236,103 @@ specialistRouter.patch("/appointments/:appointmentId/status", async (request, re
     return updated;
   });
   response.json({ appointment });
+});
+
+specialistRouter.patch("/reschedule-requests/:requestId", async (request, response) => {
+  const parsed = decideRescheduleRequestSchema.safeParse(request.body);
+  if (!parsed.success) return invalid(response, parsed.error.flatten().fieldErrors);
+  const userId = (request as unknown as AuthenticatedRequest).auth.userId;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const result = await prisma.$transaction(async (transaction) => {
+        const profile = await transaction.specialistProfile.findUnique({ where: { userId }, select: { id: true } });
+        const requestItem = await transaction.appointmentRescheduleRequest.findUnique({
+          where: { id: String(request.params.requestId) },
+          include: {
+            appointment: {
+              include: { client: true, service: true, specialist: true },
+            },
+          },
+        });
+        if (!profile || !requestItem || requestItem.appointment.specialistId !== profile.id) {
+          throw new AvailabilityError("RESCHEDULE_REQUEST_NOT_FOUND", "Запит на перенесення не знайдено", 404);
+        }
+        if (requestItem.status !== "PENDING") {
+          throw new AvailabilityError("RESCHEDULE_ALREADY_DECIDED", "Рішення щодо цього перенесення вже прийнято", 409);
+        }
+
+        if (parsed.data.status === "REJECTED") {
+          const updatedRequest = await transaction.appointmentRescheduleRequest.update({
+            where: { id: requestItem.id },
+            data: { status: "REJECTED", decidedAt: new Date() },
+          });
+          await transaction.notification.create({ data: {
+            userId: requestItem.appointment.clientId,
+            type: "RESCHEDULE_REJECTED",
+            titleUk: "Перенесення відхилено",
+            titleEn: "Reschedule declined",
+            bodyUk: "Сеанс залишається у попередній час",
+            bodyEn: "The consultation remains at its original time",
+            href: `/sessions?appointmentId=${requestItem.appointment.id}`,
+          } });
+          return { rescheduleRequest: updatedRequest, appointment: requestItem.appointment };
+        }
+
+        if (requestItem.appointment.status !== AppointmentStatus.CONFIRMED || requestItem.appointment.startsAt.getTime() <= Date.now()) {
+          throw new AvailabilityError("RESCHEDULE_NOT_ALLOWED", "Цей сеанс уже не можна перенести", 409);
+        }
+        const slots = await getAvailableSlots({
+          specialistId: requestItem.appointment.specialistId,
+          serviceId: requestItem.appointment.serviceId,
+          date: localDate(requestItem.proposedStartsAt),
+          database: transaction,
+        });
+        const slot = slots.find((item) => item.start.getTime() === requestItem.proposedStartsAt.getTime());
+        if (!slot) throw new AvailabilityError("SLOT_UNAVAILABLE", "Запропонований час уже зайнятий", 409);
+        const clientConflict = await transaction.appointment.findFirst({
+          where: {
+            id: { not: requestItem.appointment.id },
+            clientId: requestItem.appointment.clientId,
+            status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
+            startsAt: { lt: slot.end },
+            endsAt: { gt: slot.start },
+          },
+        });
+        if (clientConflict) throw new AvailabilityError("CLIENT_TIME_CONFLICT", "У клієнта вже є запис на цей час", 409);
+
+        const [updatedAppointment, updatedRequest] = await Promise.all([
+          transaction.appointment.update({
+            where: { id: requestItem.appointment.id },
+            data: { startsAt: slot.start, endsAt: slot.end },
+            include: appointmentInclude,
+          }),
+          transaction.appointmentRescheduleRequest.update({
+            where: { id: requestItem.id },
+            data: { status: "ACCEPTED", proposedEndsAt: slot.end, decidedAt: new Date() },
+          }),
+        ]);
+        await transaction.notification.create({ data: {
+          userId: requestItem.appointment.clientId,
+          type: "RESCHEDULE_ACCEPTED",
+          titleUk: "Новий час підтверджено",
+          titleEn: "New time confirmed",
+          bodyUk: "Спеціаліст підтвердив перенесення консультації",
+          bodyEn: "The specialist confirmed the new consultation time",
+          href: `/sessions?appointmentId=${requestItem.appointment.id}`,
+        } });
+        return { rescheduleRequest: updatedRequest, appointment: updatedAppointment };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      response.json(result);
+      return;
+    } catch (error) {
+      if (error instanceof AvailabilityError) {
+        response.status(error.status).json({ code: error.code, message: error.message });
+        return;
+      }
+      const retryable = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+      if (retryable && attempt < 2) continue;
+      throw error;
+    }
+  }
 });

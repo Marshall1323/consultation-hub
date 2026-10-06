@@ -7,6 +7,9 @@ import { SpecialistProfilePage } from "./components/SpecialistProfilePage";
 import { NotificationBell } from "./components/NotificationBell";
 import { SpecialistRequestsPage } from "./components/SpecialistRequestsPage";
 import { AccountSettingsPage } from "./components/AccountSettingsPage";
+import { AccountOverviewPage } from "./components/AccountOverviewPage";
+import { SpecialistDirectoryPage } from "./components/SpecialistDirectoryPage";
+import { ToastViewport } from "./components/ToastViewport";
 import { getMyAppointments, getSpecialistRequests } from "./lib/scheduling-api";
 import {
   ApiError,
@@ -19,9 +22,9 @@ import {
 
 type AuthMode = "login" | "register";
 type Locale = "uk" | "en";
-type Page = "home" | "booking" | "sessions" | "specialist" | "requests" | "cabinet" | "settings";
+type Page = "home" | "dashboard" | "specialists" | "booking" | "sessions" | "specialist" | "requests" | "cabinet" | "settings";
 
-const pageFromLocation = (): Page => window.location.pathname === "/booking" ? "booking" : window.location.pathname === "/sessions" ? "sessions" : window.location.pathname === "/specialist/requests" ? "requests" : window.location.pathname === "/specialist/cabinet" ? "cabinet" : window.location.pathname === "/settings" ? "settings" : /^\/specialists\/[^/]+$/.test(window.location.pathname) ? "specialist" : "home";
+const pageFromLocation = (): Page => window.location.pathname === "/dashboard" ? "dashboard" : window.location.pathname === "/specialists" ? "specialists" : window.location.pathname === "/booking" ? "booking" : window.location.pathname === "/sessions" ? "sessions" : window.location.pathname === "/specialist/requests" ? "requests" : window.location.pathname === "/specialist/cabinet" ? "cabinet" : window.location.pathname === "/settings" ? "settings" : /^\/specialists\/[^/]+$/.test(window.location.pathname) ? "specialist" : "home";
 const specialistIdFromLocation = () => window.location.pathname.match(/^\/specialists\/([^/]+)$/)?.[1] ?? null;
 
 const TOKEN_KEY = "consultation_access_token";
@@ -368,13 +371,13 @@ export const App = () => {
   const [sessionLoading, setSessionLoading] = useState(true);
   const [page, setPage] = useState<Page>(() => pageFromLocation());
   const [specialistId, setSpecialistId] = useState<string | null>(() => specialistIdFromLocation());
-  const [continueToPage, setContinueToPage] = useState<"booking" | "sessions" | "requests" | "cabinet" | "settings" | null>(null);
+  const [continueToPage, setContinueToPage] = useState<"dashboard" | "specialists" | "booking" | "sessions" | "requests" | "cabinet" | "settings" | null>(null);
   const [requestCount, setRequestCount] = useState(0);
   const [requestVersion, setRequestVersion] = useState(0);
   const [ownSpecialistId, setOwnSpecialistId] = useState<string | null>(null);
   const copy = translations[locale];
 
-  const navigate = (nextPage: "home" | "booking" | "sessions" | "requests" | "cabinet" | "settings", search = "") => {
+  const navigate = (nextPage: "home" | "dashboard" | "specialists" | "booking" | "sessions" | "requests" | "cabinet" | "settings", search = "") => {
     const path = nextPage === "home" ? "/" : nextPage === "requests" ? "/specialist/requests" : nextPage === "cabinet" ? "/specialist/cabinet" : `/${nextPage}`;
     window.history.pushState(null, "", `${path}${search}`);
     setPage(nextPage);
@@ -494,6 +497,8 @@ export const App = () => {
     if (url.pathname === "/specialist/requests") return navigate("requests");
     if (url.pathname === "/specialist/cabinet") return navigate("cabinet", `${url.search}${url.hash}`);
     if (url.pathname === "/settings") return navigate("settings");
+    if (url.pathname === "/dashboard") return navigate("dashboard");
+    if (url.pathname === "/specialists") return navigate("specialists");
     const profileId = url.pathname.match(/^\/specialists\/([^/]+)$/)?.[1];
     if (profileId) { window.history.pushState(null, "", `${url.pathname}${url.hash}`); setSpecialistId(profileId); setPage("specialist"); window.scrollTo({ top: 0 }); }
   };
@@ -523,7 +528,7 @@ export const App = () => {
       setAuthMode("register");
       return;
     }
-    navigate("booking");
+    navigate("dashboard");
   };
 
   const openAccountProfile = () => {
@@ -540,6 +545,7 @@ export const App = () => {
 
   return (
     <>
+      <ToastViewport />
       <header className="site-header">
         <a
           className="brand"
@@ -566,6 +572,9 @@ export const App = () => {
               <a className="header-link header-link--action" href="/booking" onClick={(event) => { event.preventDefault(); navigate("booking"); }}>
                 {locale === "uk" ? "Записатися" : "Book"}
               </a>
+              <a className="header-link header-link--action" href="/specialists" onClick={(event) => { event.preventDefault(); navigate("specialists"); }}>
+                {locale === "uk" ? "Спеціалісти" : "Specialists"}
+              </a>
               <a className="header-link header-link--action" href="/sessions" onClick={(event) => { event.preventDefault(); navigate("sessions"); }}>
                 {locale === "uk" ? "Мої сеанси" : "My sessions"}
               </a>
@@ -576,13 +585,12 @@ export const App = () => {
               <details className="account-menu">
                 <summary className="user-chip" aria-label={locale === "uk" ? "Меню облікового запису" : "Account menu"}>
                   <span className="user-chip__avatar">{user.avatarUrl ? <img src={user.avatarUrl} alt="" /> : user.firstName.slice(0, 1).toUpperCase()}</span>
-                  <span className="user-chip__name">{user.firstName}</span>
-                  <span className="user-chip__chevron" aria-hidden="true">⌄</span>
                 </summary>
                 <div className="account-menu__popover" onClick={(event) => { const button = (event.target as HTMLElement).closest("button"); if (button && !button.disabled) (event.currentTarget.closest("details") as HTMLDetailsElement).open = false; }}>
                   <div className="account-menu__identity"><strong>{user.firstName} {user.lastName}</strong><span>{user.email}</span></div>
-                  <div className="account-menu__mobile-links"><button type="button" onClick={() => navigate("booking")}>{locale === "uk" ? "Записатися" : "Book"}</button><button type="button" onClick={() => navigate("sessions")}>{locale === "uk" ? "Мої сеанси" : "My sessions"}</button></div>
-                  <button type="button" onClick={user.role === "SPECIALIST" ? openAccountProfile : () => navigate("settings")}><span>{locale === "uk" ? "Профіль" : "Profile"}</span><small>{locale === "uk" ? (user.role === "SPECIALIST" ? "Переглянути" : "Особисті дані") : (user.role === "SPECIALIST" ? "View" : "Personal details")}</small></button>
+                  <div className="account-menu__mobile-links"><button type="button" onClick={() => navigate("booking")}>{locale === "uk" ? "Записатися" : "Book"}</button><button type="button" onClick={() => navigate("specialists")}>{locale === "uk" ? "Спеціалісти" : "Specialists"}</button><button type="button" onClick={() => navigate("sessions")}>{locale === "uk" ? "Мої сеанси" : "My sessions"}</button></div>
+                  <button type="button" onClick={() => navigate("dashboard")}><span>{locale === "uk" ? "Огляд" : "Overview"}</span><small>{locale === "uk" ? "Головна сторінка кабінету" : "Account home"}</small></button>
+                  {user.role === "SPECIALIST" && <button type="button" onClick={openAccountProfile}><span>{locale === "uk" ? "Мій профіль" : "My profile"}</span><small>{locale === "uk" ? "Як вас бачать клієнти" : "What clients see"}</small></button>}
                   <button type="button" onClick={() => navigate("settings")}><span>{locale === "uk" ? "Налаштування" : "Settings"}</span><small>{locale === "uk" ? "Дані та безпека" : "Details and security"}</small></button>
                   {user.role === "SPECIALIST" && <><p className="account-menu__group">{locale === "uk" ? "Кабінет спеціаліста" : "Specialist workspace"}</p><button type="button" onClick={() => navigate("requests")}><span>{locale === "uk" ? "Заявки" : "Requests"}{requestCount > 0 && <b className="menu-count">{requestCount}</b>}</span><small>{locale === "uk" ? "Підтвердження" : "Confirmations"}</small></button><button type="button" onClick={openWorkSchedule}><span>{locale === "uk" ? "Графік і консультації" : "Schedule and consultations"}</span><small>{locale === "uk" ? "Налаштувати" : "Set up"}</small></button></>}
                   <button type="button" className="account-menu__logout" onClick={logout}>{locale === "uk" ? "Вийти" : "Sign out"}</button>
@@ -598,14 +606,16 @@ export const App = () => {
         </nav>
       </header>
 
-      {page === "booking" && user && accessToken ? (
+      {page === "dashboard" && user && accessToken ? (
+        <AccountOverviewPage token={accessToken} user={user} locale={locale} onNavigate={navigate} />
+      ) : page === "specialists" && user ? (
+        <SpecialistDirectoryPage locale={locale} onViewProfile={(id) => { window.history.pushState(null, "", `/specialists/${id}`); setSpecialistId(id); setPage("specialist"); window.scrollTo({ top: 0, behavior: "smooth" }); }} onBook={(id, serviceId) => navigate("booking", `?serviceId=${encodeURIComponent(serviceId)}&specialistId=${encodeURIComponent(id)}`)} />
+      ) : page === "booking" && user && accessToken ? (
         <main id="top" className="booking-page-main">
           <BookingFormPage token={accessToken} user={user} locale={locale} onComplete={() => navigate("sessions")} onViewProfile={openSpecialistProfile} />
         </main>
       ) : page === "sessions" && user && accessToken ? (
-        <main id="top" className="booking-page-main">
-          <MySessionsCalendar token={accessToken} user={user} locale={locale} />
-        </main>
+        <main id="top" className="booking-page-main"><MySessionsCalendar token={accessToken} user={user} locale={locale} /></main>
       ) : page === "requests" && user?.role === "SPECIALIST" && accessToken ? (
         <SpecialistRequestsPage token={accessToken} locale={locale} onOpenSession={(id) => navigate("sessions", `?appointmentId=${encodeURIComponent(id)}`)} onChanged={() => setRequestVersion((value) => value + 1)} />
       ) : page === "cabinet" && user?.role === "SPECIALIST" && accessToken ? (

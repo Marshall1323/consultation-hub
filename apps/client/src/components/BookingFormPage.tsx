@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AuthUser } from "../lib/auth-api";
 import { createAppointment, getAvailability, getServices, getSpecialists, type Service, type Specialist } from "../lib/scheduling-api";
+import { showToast } from "../lib/toast";
 
 type Props = { token: string; user: AuthUser; locale: "uk" | "en"; onComplete: () => void; onViewProfile: (specialistId: string, serviceId: string) => void };
 type Slot = { startsAt: string; endsAt: string };
@@ -38,7 +39,6 @@ export const BookingFormPage = ({ token, user, locale, onComplete, onViewProfile
   const [serviceQuery, setServiceQuery] = useState("");
   const [specialistQuery, setSpecialistQuery] = useState("");
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
   const [clientNote, setClientNote] = useState("");
   const [activeStep, setActiveStep] = useState<Step>(initialServiceId ? 2 : 1);
   const activeStepRef = useRef<HTMLElement>(null);
@@ -76,19 +76,19 @@ export const BookingFormPage = ({ token, user, locale, onComplete, onViewProfile
     summary: "Confirmation", duration: "Duration", price: "Price", note: "Message to the specialist", noteOptional: "optional", notePlaceholder: "For example, briefly describe what you would like to discuss", confirm: "Send request", loading: "Checking…", searchServices: "Search all services", searchSpecialists: "Find a specialist", nothingFound: "Nothing found.", popular: "Three popular services. Use search to find the rest.", previous: "Return to the previous step", change: "Change", continue: "Continue", noNote: "No message",
   };
 
-  useEffect(() => { void getServices().then((result) => setServices(result.services)).catch((error) => setMessage(error.message)); }, []);
+  useEffect(() => { void getServices().then((result) => setServices(result.services)).catch((error) => showToast(error.message, "error")); }, []);
   useEffect(() => {
     setSpecialistId(""); setSpecialistQuery(""); setDate(""); setSlot(null); setSlots([]);
     if (!serviceId) { setSpecialists([]); return; }
-    void getSpecialists(serviceId).then((result) => { setSpecialists(result.specialists); if (requestedSpecialistId && result.specialists.some((item) => item.id === requestedSpecialistId)) { setSpecialistId(requestedSpecialistId); setActiveStep(3); } }).catch((error) => setMessage(error.message));
+    void getSpecialists(serviceId).then((result) => { setSpecialists(result.specialists); if (requestedSpecialistId && result.specialists.some((item) => item.id === requestedSpecialistId)) { setSpecialistId(requestedSpecialistId); setActiveStep(3); } }).catch((error) => showToast(error.message, "error"));
   }, [serviceId]);
   useEffect(() => {
     setSlot(null); setSlots([]);
     if (!serviceId || !specialistId || !date) return;
-    setLoading(true); setMessage("");
+    setLoading(true);
     void getAvailability(specialistId, serviceId, date)
       .then((result) => setSlots(result.slots))
-      .catch((error) => setMessage(error.message))
+      .catch((error) => showToast(error.message, "error"))
       .finally(() => setLoading(false));
   }, [date, serviceId, specialistId]);
   useEffect(() => {
@@ -115,14 +115,18 @@ export const BookingFormPage = ({ token, user, locale, onComplete, onViewProfile
 
   const submit = async () => {
     if (!slot) return;
-    setLoading(true); setMessage("");
+    setLoading(true);
     try {
       await createAppointment(token, { serviceId, specialistId, startsAt: slot.startsAt, clientNote: clientNote.trim() || undefined });
+      showToast(uk ? "Заявку на консультацію надіслано." : "Consultation request sent.", "success");
       onComplete();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Error");
+      showToast(error instanceof Error ? error.message : "Error", "error");
       const refreshed = await getAvailability(specialistId, serviceId, date).catch(() => ({ slots: [] }));
-      setSlots(refreshed.slots); setSlot(null); setLoading(false);
+      setSlots(refreshed.slots);
+      setSlot(null);
+      setActiveStep(4);
+      setLoading(false);
     }
   };
 
@@ -198,7 +202,7 @@ export const BookingFormPage = ({ token, user, locale, onComplete, onViewProfile
         {serviceId && specialistId && date && (activeStep === 4 ? <section ref={activeStepRef} className="booking-step booking-step--reveal"><div className="booking-step__number">04</div><div className="booking-step__content"><div className="booking-step__heading"><h2>{text.time}</h2><button type="button" className="booking-step__back" onClick={() => openStep(3)} aria-label={text.previous}>↑</button></div><div className="booking-time-grid">{loading ? <span>{text.loading}</span> : slots.map((item) => <button type="button" className={slot?.startsAt === item.startsAt ? "is-selected" : ""} key={item.startsAt} onClick={() => { setSlot(item); setActiveStep(5); }}>{formatTime(item.startsAt, locale)}–{formatTime(item.endsAt, locale)}</button>)}{!loading && slots.length === 0 && <span>{text.noSlots}</span>}</div></div></section> : slot && activeStep > 4 ? collapsedStep(4, text.time, `${formatTime(slot.startsAt, locale)}–${formatTime(slot.endsAt, locale)}`) : null)}
         {slot && activeStep === 5 && <section ref={activeStepRef} className="booking-step booking-step--reveal"><div className="booking-step__number">05</div><div className="booking-step__content"><div className="booking-step__heading"><h2>{text.note} <small className="booking-step__optional">({text.noteOptional})</small></h2><button type="button" className="booking-step__back" onClick={() => openStep(4)} aria-label={text.previous}>↑</button></div><label className="booking-note-step"><span className="sr-only">{text.note}</span><textarea maxLength={500} rows={4} value={clientNote} onChange={(event) => setClientNote(event.target.value)} placeholder={text.notePlaceholder} /><small>{clientNote.length}/500 · {clientNote ? text.noteOptional : text.noNote}</small></label></div></section>}
       </div>
-      <aside className="booking-confirm-card"><p className="eyebrow">{text.summary}</p><h2>{service ? (uk ? service.nameUk : service.nameEn) : "—"}</h2><dl><div><dt>{text.specialist}</dt><dd>{specialist ? `${specialist.user.firstName} ${specialist.user.lastName}` : "—"}</dd></div><div><dt>{text.date}</dt><dd>{slot ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-GB", { dateStyle: "long", timeZone: "Europe/Kyiv" }).format(new Date(slot.startsAt)) : date || "—"}</dd></div><div><dt>{text.time}</dt><dd>{slot ? `${formatTime(slot.startsAt, locale)}–${formatTime(slot.endsAt, locale)}` : "—"}</dd></div><div><dt>{text.duration}</dt><dd>{specialistDuration ? `${specialistDuration} min` : service ? `${service.durationMin} min` : "—"}</dd></div><div><dt>{text.price}</dt><dd>{specialistPrice == null ? (service ? formatRange(service) || "—" : "—") : formatMoney(specialistPrice)}</dd></div></dl><button className="button button--wide" disabled={!slot || loading} onClick={() => void submit()}>{loading ? text.loading : text.confirm}</button>{message && <p className="booking-feedback">{message}</p>}</aside>
+      <aside className="booking-confirm-card"><p className="eyebrow">{text.summary}</p><h2>{service ? (uk ? service.nameUk : service.nameEn) : "—"}</h2><dl><div><dt>{text.specialist}</dt><dd>{specialist ? `${specialist.user.firstName} ${specialist.user.lastName}` : "—"}</dd></div><div><dt>{text.date}</dt><dd>{slot ? new Intl.DateTimeFormat(uk ? "uk-UA" : "en-GB", { dateStyle: "long", timeZone: "Europe/Kyiv" }).format(new Date(slot.startsAt)) : date || "—"}</dd></div><div><dt>{text.time}</dt><dd>{slot ? `${formatTime(slot.startsAt, locale)}–${formatTime(slot.endsAt, locale)}` : "—"}</dd></div><div><dt>{text.duration}</dt><dd>{specialistDuration ? `${specialistDuration} min` : service ? `${service.durationMin} min` : "—"}</dd></div><div><dt>{text.price}</dt><dd>{specialistPrice == null ? (service ? formatRange(service) || "—" : "—") : formatMoney(specialistPrice)}</dd></div></dl><button className="button button--wide" disabled={!slot || loading} onClick={() => void submit()}>{loading ? text.loading : text.confirm}</button></aside>
     </div>
   </section>;
 };

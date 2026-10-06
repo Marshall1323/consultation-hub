@@ -25,6 +25,15 @@ enum NotificationType {
   BOOKING_CONFIRMED
   BOOKING_REJECTED
   REVIEW_RECEIVED
+  RESCHEDULE_REQUEST
+  RESCHEDULE_ACCEPTED
+  RESCHEDULE_REJECTED
+}
+
+enum RescheduleRequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
 }
 
 model User {
@@ -40,6 +49,7 @@ model User {
   clientBookings  Appointment[]      @relation("ClientAppointments")
   reviews          Review[]           @relation("ClientReviews")
   notifications    Notification[]
+  rescheduleRequests AppointmentRescheduleRequest[]
   createdAt       DateTime           @default(now())
   updatedAt       DateTime           @updatedAt
 }
@@ -169,7 +179,25 @@ model Appointment {
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
   review        Review?
+  rescheduleRequests AppointmentRescheduleRequest[]
 
   @@index([specialistId, startsAt, endsAt])
   @@index([clientId, startsAt])
+}
+
+model AppointmentRescheduleRequest {
+  id               String                  @id @default(uuid())
+  appointmentId    String
+  appointment      Appointment             @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  requesterId      String
+  requester        User                    @relation(fields: [requesterId], references: [id], onDelete: Cascade)
+  proposedStartsAt DateTime
+  proposedEndsAt   DateTime
+  status           RescheduleRequestStatus @default(PENDING)
+  decidedAt        DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  @@index([appointmentId, status])
+  @@index([requesterId, createdAt])
 }

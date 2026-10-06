@@ -14,6 +14,14 @@ export const createAppointmentSchema = z.object({
   clientNote: z.string().trim().max(500).optional(),
 });
 
+export const createRescheduleRequestSchema = z.object({
+  startsAt: z.string().datetime({ offset: true }),
+});
+
+export const decideRescheduleRequestSchema = z.object({
+  status: z.enum(["ACCEPTED", "REJECTED"]),
+});
+
 export const scheduleSchema = z.object({
   slotStepMin: z.number().int().min(5).max(120).optional(),
   intervals: z.array(z.object({

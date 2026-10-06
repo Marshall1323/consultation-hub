@@ -4,7 +4,7 @@ import type { Response } from "express";
 import { prisma } from "../../lib/prisma.js";
 import { requireAuth, requireRole, type AuthenticatedRequest } from "../auth/auth.middleware.js";
 import { appointmentInclude } from "./appointment.select.js";
-import { availabilityQuerySchema, createAppointmentSchema } from "./appointment.schemas.js";
+import { availabilityQuerySchema, createAppointmentSchema, createRescheduleRequestSchema } from "./appointment.schemas.js";
 import { AvailabilityError, getAvailableSlots, localDate } from "./availability.service.js";
 import { schedulingConfig } from "./scheduling.config.js";
 
@@ -78,7 +78,20 @@ appointmentRouter.get("/appointments/me", requireAuth, async (request, response)
     },
     service: { id: row.serviceId, nameUk: row.serviceNameUk, nameEn: row.serviceNameEn, durationMin: row.serviceDurationMin, priceCents: row.servicePriceCents },
   }));
-  response.json({ appointments });
+  const rescheduleRequests = rows.length ? await prisma.appointmentRescheduleRequest.findMany({
+    where: { appointmentId: { in: rows.map((row) => row.id) } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, appointmentId: true, proposedStartsAt: true, proposedEndsAt: true, status: true, createdAt: true, decidedAt: true },
+  }) : [];
+  const latestRequestByAppointment = new Map<string, (typeof rescheduleRequests)[number]>();
+  for (const item of rescheduleRequests) {
+    if (!latestRequestByAppointment.has(item.appointmentId)) latestRequestByAppointment.set(item.appointmentId, item);
+  }
+  const appointmentsWithRescheduling = appointments.map((appointment) => ({
+    ...appointment,
+    rescheduleRequest: latestRequestByAppointment.get(appointment.id) ?? null,
+  }));
+  response.json({ appointments: appointmentsWithRescheduling });
 });
 
 appointmentRouter.post(
@@ -175,6 +188,99 @@ appointmentRouter.post(
     }
   },
 );
+
+appointmentRouter.post("/appointments/:appointmentId/reschedule-requests", requireAuth, async (request, response) => {
+  const parsed = createRescheduleRequestSchema.safeParse(request.body);
+  if (!parsed.success) return invalid(response, parsed.error.flatten().fieldErrors);
+
+  const { userId } = (request as AuthenticatedRequest).auth;
+  const appointmentId = String(request.params.appointmentId);
+  const requestedStart = new Date(parsed.data.startsAt);
+  if (requestedStart.getTime() <= Date.now()) {
+    response.status(409).json({ code: "RESCHEDULE_IN_PAST", message: "Оберіть майбутній час" });
+    return;
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const result = await prisma.$transaction(async (transaction) => {
+        const appointment = await transaction.appointment.findUnique({
+          where: { id: appointmentId },
+          include: { service: true, specialist: { include: { user: true } }, client: true },
+        });
+        if (!appointment || appointment.clientId !== userId) {
+          throw new AvailabilityError("APPOINTMENT_NOT_FOUND", "Запис не знайдено", 404);
+        }
+        if (appointment.status !== AppointmentStatus.CONFIRMED || appointment.startsAt.getTime() <= Date.now()) {
+          throw new AvailabilityError("RESCHEDULE_NOT_ALLOWED", "Цей сеанс уже не можна перенести", 409);
+        }
+        if (appointment.startsAt.getTime() === requestedStart.getTime()) {
+          throw new AvailabilityError("SAME_APPOINTMENT_TIME", "Оберіть інший час", 409);
+        }
+        const activeRequest = await transaction.appointmentRescheduleRequest.findFirst({
+          where: { appointmentId, status: "PENDING" },
+        });
+        if (activeRequest) {
+          throw new AvailabilityError("RESCHEDULE_ALREADY_PENDING", "Запит на перенесення вже очікує відповіді", 409);
+        }
+
+        const slots = await getAvailableSlots({
+          specialistId: appointment.specialistId,
+          serviceId: appointment.serviceId,
+          date: localDate(requestedStart),
+          database: transaction,
+        });
+        const slot = slots.find((item) => item.start.getTime() === requestedStart.getTime());
+        if (!slot) throw new AvailabilityError("SLOT_UNAVAILABLE", "Обраний час уже недоступний", 409);
+
+        const clientConflict = await transaction.appointment.findFirst({
+          where: {
+            id: { not: appointment.id },
+            clientId: userId,
+            status: { in: [AppointmentStatus.PENDING, AppointmentStatus.CONFIRMED] },
+            startsAt: { lt: slot.end },
+            endsAt: { gt: slot.start },
+          },
+        });
+        if (clientConflict) throw new AvailabilityError("CLIENT_TIME_CONFLICT", "У вас вже є запис на цей час", 409);
+
+        const rescheduleRequest = await transaction.appointmentRescheduleRequest.create({
+          data: {
+            appointmentId: appointment.id,
+            requesterId: userId,
+            proposedStartsAt: slot.start,
+            proposedEndsAt: slot.end,
+          },
+        });
+        await transaction.notification.create({ data: {
+          userId: appointment.specialist.userId,
+          type: "RESCHEDULE_REQUEST",
+          titleUk: "Запит на перенесення",
+          titleEn: "Reschedule request",
+          bodyUk: `${appointment.client.firstName} ${appointment.client.lastName} пропонує новий час консультації`,
+          bodyEn: `${appointment.client.firstName} ${appointment.client.lastName} proposed a new consultation time`,
+          href: "/specialist/requests?tab=reschedule",
+        } });
+        return rescheduleRequest;
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+      response.status(201).json({ rescheduleRequest: result });
+      return;
+    } catch (error) {
+      if (error instanceof AvailabilityError) {
+        response.status(error.status).json({ code: error.code, message: error.message });
+        return;
+      }
+      const retryable = error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034";
+      if (retryable && attempt < 2) continue;
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        response.status(409).json({ code: "RESCHEDULE_ALREADY_PENDING", message: "Запит на перенесення вже очікує відповіді" });
+        return;
+      }
+      throw error;
+    }
+  }
+});
 
 appointmentRouter.patch("/appointments/:appointmentId/cancel", requireAuth, async (request, response) => {
   const { userId, role } = (request as AuthenticatedRequest).auth;
